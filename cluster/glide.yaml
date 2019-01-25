@@ -1,0 +1,15 @@
+package: github.com/appscodelabs/actions/cluster
+import:
+- package: github.com/appscode/go
+  subpackages:
+  - log
+  - log/golog
+- package: github.com/appscode/stash
+  subpackages:
+  - client/clientset/versioned/fake
+  - pkg/cmds
+- package: github.com/spf13/cobra
+- package: k8s.io/client-go
+  subpackages:
+  - kubernetes
+  - tools/clientcmd
