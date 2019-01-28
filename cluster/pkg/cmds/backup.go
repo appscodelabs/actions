@@ -18,11 +18,11 @@ func NewCmdBackup() *cobra.Command {
 		context        string
 	)
 	cmd := &cobra.Command{
-		Use:               "backup",
-		Short:             "Takes a backup of Kubernetes api objects",
+		Use:               "restic",
+		Short:             "Takes a restic of Kubernetes api objects",
 		DisableAutoGenTag: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			flags.EnsureRequiredFlags(cmd, "backup-dir")
+			flags.EnsureRequiredFlags(cmd, "restic-dir")
 
 			restConfig, err := clientcmd.BuildConfigFromContext(kubeconfigPath, context)
 			if err != nil {
@@ -39,7 +39,7 @@ func NewCmdBackup() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&sanitize, "sanitize", false, " Sanitize fields in YAML")
-	cmd.Flags().StringVar(&backupDir, "backup-dir", "", "Directory where YAML files will be stored")
+	cmd.Flags().StringVar(&backupDir, "restic-dir", "", "Directory where YAML files will be stored")
 	cmd.Flags().StringVar(&kubeconfigPath, "kubeconfig", "", "kubeconfig file pointing at the 'core' kubernetes server")
 	cmd.Flags().StringVar(&context, "context", "", "Name of the kubeconfig context to use")
 	return cmd
