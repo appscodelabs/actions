@@ -2,40 +2,16 @@ package restic
 
 import (
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/appscode/go/log"
-	api "github.com/appscode/stash/apis/stash/v1alpha1"
-	shell "github.com/codeskyblue/go-sh"
 	"github.com/pkg/errors"
 )
 
 const (
-	Exe = "/bin/restic"
+	Exe = "/usr/local/bin/restic"
 )
-
-type ResticWrapper struct {
-	sh          *shell.Session
-	scratchDir  string
-	enableCache bool
-	hostname    string
-	cacertFile  string
-	secretDir string
-}
-
-func New(scratchDir string, enableCache bool, hostname string) *ResticWrapper {
-	ctrl := &ResticWrapper{
-		sh:          shell.NewSession(),
-		scratchDir:  scratchDir,
-		enableCache: enableCache,
-		hostname:    hostname,
-	}
-	ctrl.sh.SetDir(scratchDir)
-	ctrl.sh.ShowCMD = true
-	return ctrl
-}
 
 type Snapshot struct {
 	ID       string    `json:"id"`
@@ -61,7 +37,7 @@ func (w *ResticWrapper) ListSnapshots(snapshotIDs []string) ([]Snapshot, error) 
 	return result, err
 }
 
-func (w *ResticWrapper) DeleteSnapshots(snapshotIDs []string) error {
+func (w *ResticWrapper) DeleteSnapshots(snapshotIDs []string) ([]byte, error) {
 	args := w.appendCacheDirFlag([]interface{}{"forget", "--quiet", "--prune"})
 	args = w.appendCaCertFlag(args)
 	for _, id := range snapshotIDs {
@@ -71,26 +47,26 @@ func (w *ResticWrapper) DeleteSnapshots(snapshotIDs []string) error {
 	return w.run(Exe, args)
 }
 
-func (w *ResticWrapper) InitRepositoryIfAbsent() error {
+func (w *ResticWrapper) InitRepositoryIfAbsent() ([]byte, error) {
 	args := w.appendCacheDirFlag([]interface{}{"snapshots", "--json"})
 	args = w.appendCaCertFlag(args)
-	if err := w.run(Exe, args); err != nil {
+	if _, err := w.run(Exe, args); err != nil {
 		args = w.appendCacheDirFlag([]interface{}{"init"})
 		args = w.appendCaCertFlag(args)
 
 		return w.run(Exe, args)
 	}
-	return nil
+	return nil, nil
 }
 
-func (w *ResticWrapper) Backup(resource *api.Restic, fg api.FileGroup) error {
-	args := []interface{}{"backup", fg.Path, "--force"}
+func (w *ResticWrapper) Backup(path string, tags []string) ([]byte, error) {
+	args := []interface{}{"backup", path,}
 	if w.hostname != "" {
-		args = append(args, "--hostname")
+		args = append(args, "--host")
 		args = append(args, w.hostname)
 	}
 	// add tags if any
-	for _, tag := range fg.Tags {
+	for _, tag := range tags {
 		args = append(args, "--tag")
 		args = append(args, tag)
 	}
@@ -100,61 +76,61 @@ func (w *ResticWrapper) Backup(resource *api.Restic, fg api.FileGroup) error {
 	return w.run(Exe, args)
 }
 
-func (w *ResticWrapper) Forget(resource *api.Restic, fg api.FileGroup) error {
-	// Get retentionPolicy for fileGroup, ignore if not found
-	retentionPolicy := api.RetentionPolicy{}
-	for _, policy := range resource.Spec.RetentionPolicies {
-		if policy.Name == fg.RetentionPolicyName {
-			retentionPolicy = policy
-			break
-		}
-	}
+//func (w *ResticWrapper) Forget(resource *api.Restic, fg api.FileGroup) error {
+//	// Get retentionPolicy for fileGroup, ignore if not found
+//	retentionPolicy := api.RetentionPolicy{}
+//	for _, policy := range resource.Spec.RetentionPolicies {
+//		if policy.Name == fg.RetentionPolicyName {
+//			retentionPolicy = policy
+//			break
+//		}
+//	}
+//
+//	args := []interface{}{"forget"}
+//	if retentionPolicy.KeepLast > 0 {
+//		args = append(args, string(api.KeepLast))
+//		args = append(args, strconv.Itoa(retentionPolicy.KeepLast))
+//	}
+//	if retentionPolicy.KeepHourly > 0 {
+//		args = append(args, string(api.KeepHourly))
+//		args = append(args, strconv.Itoa(retentionPolicy.KeepHourly))
+//	}
+//	if retentionPolicy.KeepDaily > 0 {
+//		args = append(args, string(api.KeepDaily))
+//		args = append(args, strconv.Itoa(retentionPolicy.KeepDaily))
+//	}
+//	if retentionPolicy.KeepWeekly > 0 {
+//		args = append(args, string(api.KeepWeekly))
+//		args = append(args, strconv.Itoa(retentionPolicy.KeepWeekly))
+//	}
+//	if retentionPolicy.KeepMonthly > 0 {
+//		args = append(args, string(api.KeepMonthly))
+//		args = append(args, strconv.Itoa(retentionPolicy.KeepMonthly))
+//	}
+//	if retentionPolicy.KeepYearly > 0 {
+//		args = append(args, string(api.KeepYearly))
+//		args = append(args, strconv.Itoa(retentionPolicy.KeepYearly))
+//	}
+//	for _, tag := range retentionPolicy.KeepTags {
+//		args = append(args, string(api.KeepTag))
+//		args = append(args, tag)
+//	}
+//	if retentionPolicy.Prune {
+//		args = append(args, "--prune")
+//	}
+//	if retentionPolicy.DryRun {
+//		args = append(args, "--dry-run")
+//	}
+//	if len(args) > 1 {
+//		args = w.appendCacheDirFlag(args)
+//		args = w.appendCaCertFlag(args)
+//
+//		return w.run(Exe, args)
+//	}
+//	return nil
+//}
 
-	args := []interface{}{"forget"}
-	if retentionPolicy.KeepLast > 0 {
-		args = append(args, string(api.KeepLast))
-		args = append(args, strconv.Itoa(retentionPolicy.KeepLast))
-	}
-	if retentionPolicy.KeepHourly > 0 {
-		args = append(args, string(api.KeepHourly))
-		args = append(args, strconv.Itoa(retentionPolicy.KeepHourly))
-	}
-	if retentionPolicy.KeepDaily > 0 {
-		args = append(args, string(api.KeepDaily))
-		args = append(args, strconv.Itoa(retentionPolicy.KeepDaily))
-	}
-	if retentionPolicy.KeepWeekly > 0 {
-		args = append(args, string(api.KeepWeekly))
-		args = append(args, strconv.Itoa(retentionPolicy.KeepWeekly))
-	}
-	if retentionPolicy.KeepMonthly > 0 {
-		args = append(args, string(api.KeepMonthly))
-		args = append(args, strconv.Itoa(retentionPolicy.KeepMonthly))
-	}
-	if retentionPolicy.KeepYearly > 0 {
-		args = append(args, string(api.KeepYearly))
-		args = append(args, strconv.Itoa(retentionPolicy.KeepYearly))
-	}
-	for _, tag := range retentionPolicy.KeepTags {
-		args = append(args, string(api.KeepTag))
-		args = append(args, tag)
-	}
-	if retentionPolicy.Prune {
-		args = append(args, "--prune")
-	}
-	if retentionPolicy.DryRun {
-		args = append(args, "--dry-run")
-	}
-	if len(args) > 1 {
-		args = w.appendCacheDirFlag(args)
-		args = w.appendCaCertFlag(args)
-
-		return w.run(Exe, args)
-	}
-	return nil
-}
-
-func (w *ResticWrapper) Restore(path, host, snapshotID string) error {
+func (w *ResticWrapper) Restore(path, host, snapshotID string) ([]byte, error) {
 	args := []interface{}{"restore"}
 	if snapshotID != "" {
 		args = append(args, snapshotID)
@@ -177,7 +153,7 @@ func (w *ResticWrapper) Restore(path, host, snapshotID string) error {
 	return w.run(Exe, args)
 }
 
-func (w *ResticWrapper) Check() error {
+func (w *ResticWrapper) Check() ([]byte, error) {
 	args := w.appendCacheDirFlag([]interface{}{"check"})
 	args = w.appendCaCertFlag(args)
 
@@ -199,15 +175,15 @@ func (w *ResticWrapper) appendCaCertFlag(args []interface{}) []interface{} {
 	return args
 }
 
-func (w *ResticWrapper) run(cmd string, args []interface{}) error {
-	out, err := w.sh.Command(cmd, args...).CombinedOutput()
+func (w *ResticWrapper) run(cmd string, args []interface{}) ([]byte, error) {
+	out, err := w.sh.Command(cmd, args...).Output()
 	if err != nil {
 		log.Errorf("Error running command '%s %s' output:\n%s", cmd, args, string(out))
 		parts := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
 		if len(parts) > 1 {
 			parts = parts[len(parts)-1:]
-			return errors.New(parts[0])
+			return nil, errors.New(parts[0])
 		}
 	}
-	return err
+	return out, err
 }

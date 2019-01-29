@@ -5,7 +5,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 const (
@@ -85,7 +84,7 @@ func (w *ResticWrapper) SetupEnv(provider, bucket, endpoint, path, secretDir str
 	}
 	w.sh.SetEnv(TMPDIR, tmpDir)
 
-	path = strings.TrimPrefix(path, "/")
+	//path = strings.TrimPrefix(path, "/")
 
 	switch provider {
 
