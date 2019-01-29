@@ -37,7 +37,7 @@ func WriteOutput(output []byte, outputDir string) error {
 		return err
 	}
 
-	jsonOuput, err := json.Marshal(out)
+	jsonOuput, err := json.MarshalIndent(out,"","  ")
 	if err != nil {
 		return err
 	}
@@ -110,6 +110,7 @@ func separators(r rune) bool {
 func writeOutputJson(data []byte, dir string) error {
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
+		fmt.Println("Failed to make directory: ",dir)
 		return err
 	}
 	fileName := filepath.Join(dir, "output.json")

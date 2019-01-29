@@ -35,7 +35,7 @@ func NewCmdBackup() *cobra.Command {
 		backupDir:   "/tmp/restic/backup",
 		scratchDir:  "/tmp/restic/scratch",
 		enableCache: false,
-		outputDir:   "/restic",
+		outputDir:   "/tmp/restic/output",
 	}
 
 	cmd := &cobra.Command{
@@ -95,6 +95,6 @@ func NewCmdBackup() *cobra.Command {
 	cmd.Flags().StringVar(&opt.secretDir, "secret-dir", "", "directory where storage secret has been mounted")
 	cmd.Flags().BoolVar(&opt.enableCache, "cache", opt.enableCache, "weather to enable cache")
 	cmd.Flags().StringVar(&opt.hostname, "hostname", "", "name of the host machine")
-	cmd.Flags().StringVar(&opt.outputDir, "output-dir", "", "Directory where output.json file will be written")
+	cmd.Flags().StringVar(&opt.outputDir, "output-dir", opt.outputDir, "Directory where output.json file will be written")
 	return cmd
 }
