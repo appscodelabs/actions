@@ -1,10 +1,15 @@
 package cmds
 
 import (
+	"bytes"
 	"fmt"
-
 	"github.com/appscode/kutil/tools/backup"
 	"github.com/appscode/kutil/tools/clientcmd"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
+	"github.com/the-redback/go-oneliners"
+	"io/ioutil"
+	"path/filepath"
 
 	"github.com/appscode/go/flags"
 	"github.com/appscodelabs/actions/cluster/pkg/restic"
@@ -58,28 +63,71 @@ func NewCmdBackup() *cobra.Command {
 			fmt.Printf("Cluster objects are stored in %s", filename)
 			fmt.Println()
 
-			// ============= Upload the dumped YAML using restic ====================
+			// ============== Setup Environment variables for restic cli ===================
 			w := restic.New(opt.scratchDir, opt.enableCache, opt.hostname)
 			err = w.SetupEnv(opt.provider, opt.bucket, opt.endpoint, opt.path, opt.secretDir)
 			if err != nil {
-				fmt.Println(err)
-				return err
-			}
-			_, err = w.InitRepositoryIfAbsent()
-			if err != nil {
-				fmt.Println(err)
 				return err
 			}
 
+			// ============== Initialize restic repository if it does not exist ================
+			_, err = w.InitRepositoryIfAbsent()
+			if err != nil {
+				return err
+			}
+
+			// ============ Backup YAML of cluster resources that has been dumped in the directory pointed by opt.backupDir =====
 			out, err := w.Backup(opt.backupDir, nil)
 			if err != nil {
 				fmt.Println(err)
 				return err
 			}
-			// ================== Write Output of backup command into output.json =============
-			err = restic.WriteOutput(out, opt.outputDir)
+
+			// ================== Parse output of backup command =================
+			backupOutput, err := restic.ParseBackupOutput(out)
 			if err != nil {
 				return err
+			}
+
+			// ================== Write output of backup command into output.json to the directory pointed by opt.outputDir =============
+			err = restic.WriteOutput(backupOutput, opt.outputDir)
+			if err != nil {
+				return err
+			}
+
+			// ================ Generate Prometheus metrics from backupOutput ================
+			backupMetrics := restic.NewBackupMetrics()
+			err = backupMetrics.SetValues(backupOutput)
+			if err != nil {
+				return err
+			}
+			registry:=prometheus.NewRegistry()
+			registry.MustRegister(
+				backupMetrics.FileMetrics.TotalFiles,
+				backupMetrics.FileMetrics.NewFiles,
+				backupMetrics.FileMetrics.ModifiedFiles,
+				backupMetrics.FileMetrics.UnmodifiedFiles,
+				backupMetrics.DataSize,
+				backupMetrics.DataUploaded,
+				backupMetrics.DataProcessingTime,
+				)
+			err=prometheus.WriteToTextfile(filepath.Join(opt.outputDir,"metrics.prom"),registry)
+			if err!=nil{
+				return err
+			}
+			in,err:=ioutil.ReadFile(filepath.Join(opt.outputDir,"metrics.prom"))
+			if err!=nil{
+				return err
+			}
+			var parser expfmt.TextParser
+			metricFamilies,err:=parser.TextToMetricFamilies(bytes.NewReader(in))
+			if err!=nil{
+				return err
+			}
+			for k,v:= range metricFamilies{
+				fmt.Println(k)
+				fmt.Println(*v.Name)
+				oneliners.PrettyJson(v.Metric)
 			}
 			return nil
 		},

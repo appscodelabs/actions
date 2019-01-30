@@ -30,21 +30,15 @@ type FileStats struct {
 	UnmodifiedFiles *int `json:"unmodifiedFiles,omitempty"`
 }
 
-func WriteOutput(output []byte, outputDir string) error {
-	fmt.Println("=============output=========\n", string(output))
-	out, err := parseOutput(output)
-	if err != nil {
-		return err
-	}
-
-	jsonOuput, err := json.MarshalIndent(out,"","  ")
+func WriteOutput(out *BackupOutput, outputDir string) error {
+	jsonOuput, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
 	}
 	return writeOutputJson(jsonOuput, outputDir)
 }
 
-func parseOutput(output []byte) (*BackupOutput, error) {
+func ParseBackupOutput(output []byte) (*BackupOutput, error) {
 	res := &BackupOutput{}
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	var line string
@@ -110,7 +104,7 @@ func separators(r rune) bool {
 func writeOutputJson(data []byte, dir string) error {
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		fmt.Println("Failed to make directory: ",dir)
+		fmt.Println("Failed to make directory: ", dir)
 		return err
 	}
 	fileName := filepath.Join(dir, "output.json")
