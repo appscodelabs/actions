@@ -1,6 +1,7 @@
 package restic
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -18,6 +19,8 @@ type BackupMetrics struct {
 	DataProcessingTime prometheus.Gauge
 	// FileMetrics shows information of backup files
 	FileMetrics *FileMetrics
+	// RepoIntegrity shows result of repository integrity check after last backup
+	RepoIntegrity prometheus.Gauge
 }
 
 type FileMetrics struct {
@@ -99,6 +102,15 @@ func NewBackupMetrics() *BackupMetrics {
 				},
 			),
 		},
+		RepoIntegrity: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Namespace:   "restic",
+				Subsystem:   "repository",
+				Name:        "integrity",
+				Help:        "Result of repository integrity check after last backup",
+				ConstLabels: nil,
+			},
+		),
 	}
 }
 
@@ -119,12 +131,18 @@ func (backupMetrics *BackupMetrics) SetValues(backupOutput *BackupOutput) error 
 	if err != nil {
 		return err
 	}
-	backupMetrics.DataProcessingTime.Set(processingTimeSeconds)
+	backupMetrics.DataProcessingTime.Set(float64(processingTimeSeconds))
 
 	backupMetrics.FileMetrics.TotalFiles.Set(float64(*backupOutput.FileStats.TotalFiles))
 	backupMetrics.FileMetrics.NewFiles.Set(float64(*backupOutput.FileStats.NewFiles))
 	backupMetrics.FileMetrics.ModifiedFiles.Set(float64(*backupOutput.FileStats.ModifiedFiles))
 	backupMetrics.FileMetrics.UnmodifiedFiles.Set(float64(*backupOutput.FileStats.UnmodifiedFiles))
+
+	if *backupOutput.Integrity {
+		backupMetrics.RepoIntegrity.Set(1)
+	} else {
+		backupMetrics.RepoIntegrity.Set(0)
+	}
 	return nil
 }
 
@@ -163,20 +181,12 @@ func convertSizeToBytes(dataSize string) (float64, error) {
 	return 0, errors.New("unknown unit for data size")
 }
 
-func convertTimeToSeconds(processingTime string) (float64, error) {
-	parts := strings.Split(processingTime, ":")
-	if len(parts) != 2 {
-		return 0, errors.New("invalid processing time format")
-	}
-
-	minutes, err := strconv.ParseFloat(parts[0], 64)
-	if err != nil {
-		return 0, err
-	}
-	fraction, err := strconv.ParseFloat(parts[1], 64)
+func convertTimeToSeconds(processingTime string) (int, error) {
+	var minutes, seconds int
+	_, err := fmt.Sscanf(processingTime, "%dm%ds", &minutes, &seconds)
 	if err != nil {
 		return 0, err
 	}
 
-	return minutes*60 + (fraction*60)/100, nil
+	return minutes*60 + seconds, nil
 }

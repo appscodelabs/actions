@@ -13,6 +13,16 @@ const (
 	Exe = "/usr/local/bin/restic"
 )
 
+const (
+	KeepLast    string = "--keep-last"
+	KeepHourly  string = "--keep-hourly"
+	KeepDaily   string = "--keep-daily"
+	KeepWeekly  string = "--keep-weekly"
+	KeepMonthly string = "--keep-monthly"
+	KeepYearly  string = "--keep-yearly"
+	KeepTag     string = "--keep-tag"
+)
+
 type Snapshot struct {
 	ID       string    `json:"id"`
 	Time     time.Time `json:"time"`
@@ -60,7 +70,7 @@ func (w *ResticWrapper) InitRepositoryIfAbsent() ([]byte, error) {
 }
 
 func (w *ResticWrapper) Backup(path string, tags []string) ([]byte, error) {
-	args := []interface{}{"backup", path,}
+	args := []interface{}{"backup", path}
 	if w.hostname != "" {
 		args = append(args, "--host")
 		args = append(args, w.hostname)
@@ -76,59 +86,29 @@ func (w *ResticWrapper) Backup(path string, tags []string) ([]byte, error) {
 	return w.run(Exe, args)
 }
 
-//func (w *ResticWrapper) Forget(resource *api.Restic, fg api.FileGroup) error {
-//	// Get retentionPolicy for fileGroup, ignore if not found
-//	retentionPolicy := api.RetentionPolicy{}
-//	for _, policy := range resource.Spec.RetentionPolicies {
-//		if policy.Name == fg.RetentionPolicyName {
-//			retentionPolicy = policy
-//			break
-//		}
-//	}
-//
-//	args := []interface{}{"forget"}
-//	if retentionPolicy.KeepLast > 0 {
-//		args = append(args, string(api.KeepLast))
-//		args = append(args, strconv.Itoa(retentionPolicy.KeepLast))
-//	}
-//	if retentionPolicy.KeepHourly > 0 {
-//		args = append(args, string(api.KeepHourly))
-//		args = append(args, strconv.Itoa(retentionPolicy.KeepHourly))
-//	}
-//	if retentionPolicy.KeepDaily > 0 {
-//		args = append(args, string(api.KeepDaily))
-//		args = append(args, strconv.Itoa(retentionPolicy.KeepDaily))
-//	}
-//	if retentionPolicy.KeepWeekly > 0 {
-//		args = append(args, string(api.KeepWeekly))
-//		args = append(args, strconv.Itoa(retentionPolicy.KeepWeekly))
-//	}
-//	if retentionPolicy.KeepMonthly > 0 {
-//		args = append(args, string(api.KeepMonthly))
-//		args = append(args, strconv.Itoa(retentionPolicy.KeepMonthly))
-//	}
-//	if retentionPolicy.KeepYearly > 0 {
-//		args = append(args, string(api.KeepYearly))
-//		args = append(args, strconv.Itoa(retentionPolicy.KeepYearly))
-//	}
-//	for _, tag := range retentionPolicy.KeepTags {
-//		args = append(args, string(api.KeepTag))
-//		args = append(args, tag)
-//	}
-//	if retentionPolicy.Prune {
-//		args = append(args, "--prune")
-//	}
-//	if retentionPolicy.DryRun {
-//		args = append(args, "--dry-run")
-//	}
-//	if len(args) > 1 {
-//		args = w.appendCacheDirFlag(args)
-//		args = w.appendCaCertFlag(args)
-//
-//		return w.run(Exe, args)
-//	}
-//	return nil
-//}
+func (w *ResticWrapper) Cleanup(policy, value string, prune, dryRun bool) ([]byte, error) {
+
+	args := []interface{}{"forget"}
+
+	args = append(args, policy)
+	args = append(args, value)
+
+	if prune {
+		args = append(args, "--prune")
+	}
+
+	if dryRun {
+		args = append(args, "--dry-run")
+	}
+
+	if len(args) > 1 {
+		args = w.appendCacheDirFlag(args)
+		args = w.appendCaCertFlag(args)
+
+		return w.run(Exe, args)
+	}
+	return nil, nil
+}
 
 func (w *ResticWrapper) Restore(path, host, snapshotID string) ([]byte, error) {
 	args := []interface{}{"restore"}
@@ -155,6 +135,14 @@ func (w *ResticWrapper) Restore(path, host, snapshotID string) ([]byte, error) {
 
 func (w *ResticWrapper) Check() ([]byte, error) {
 	args := w.appendCacheDirFlag([]interface{}{"check"})
+	args = w.appendCaCertFlag(args)
+
+	return w.run(Exe, args)
+}
+
+func (w *ResticWrapper) Stats() ([]byte, error) {
+	args := w.appendCacheDirFlag([]interface{}{"stats"})
+	args = append(args,"--mode=raw-data","--quiet")
 	args = w.appendCaCertFlag(args)
 
 	return w.run(Exe, args)

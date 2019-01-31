@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/the-redback/go-oneliners"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -12,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/appscode/go/types"
-	oneliners "github.com/the-redback/go-oneliners"
 )
 
 type BackupOutput struct {
@@ -21,6 +21,7 @@ type BackupOutput struct {
 	Uploaded       string    `json:"uploaded,omitempty"`
 	ProcessingTime string    `json:"processingTime,omitempty"`
 	FileStats      FileStats `json:"fileStats,omitempty"`
+	Integrity      *bool     `json:"integrity,omitempty"`
 }
 
 type FileStats struct {
@@ -31,6 +32,7 @@ type FileStats struct {
 }
 
 func WriteOutput(out *BackupOutput, outputDir string) error {
+	oneliners.PrettyJson(out, "Output")
 	jsonOuput, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
@@ -84,7 +86,11 @@ func ParseBackupOutput(output []byte) (*BackupOutput, error) {
 			}
 			res.FileStats.TotalFiles = types.IntP(totalFiles)
 			res.Size = info[3] + " " + info[4]
-			res.ProcessingTime = info[6]
+			m, s, err := convertToMinutesSeconds(info[6])
+			if err != nil {
+				return nil, err
+			}
+			res.ProcessingTime = fmt.Sprintf("%dm%ds", m, s)
 		} else if strings.HasPrefix(line, "snapshot") && strings.HasSuffix(line, "saved") {
 			info := strings.FieldsFunc(line, separators)
 			length := len(info)
@@ -94,8 +100,44 @@ func ParseBackupOutput(output []byte) (*BackupOutput, error) {
 			res.Snapshot = info[1]
 		}
 	}
-	oneliners.PrettyJson(res, "Response")
 	return res, nil
+}
+
+func ParseCheckOutput(out []byte) bool {
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	var line string
+	for scanner.Scan() {
+		line = scanner.Text()
+		line = strings.TrimSpace(line)
+		if line == "no errors were found" {
+			return true
+		}
+	}
+	return false
+}
+
+func convertToMinutesSeconds(time string) (int, int, error) {
+	parts := strings.Split(time, ":")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("failed to convert minutes")
+	}
+	minutes, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, err
+	}
+
+	fraction, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, err
+	}
+	seconds := int((fraction * 60) / 100)
+	if seconds >= 60 {
+		m := int(seconds / 60)
+		minutes = minutes + m
+		seconds = seconds - m*60
+	}
+
+	return minutes, seconds, nil
 }
 
 func separators(r rune) bool {

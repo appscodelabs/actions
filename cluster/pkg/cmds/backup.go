@@ -1,15 +1,18 @@
 package cmds
 
 import (
-	"bytes"
 	"fmt"
+	"io/ioutil"
+	"path/filepath"
+
+	"github.com/appscode/go/types"
+
+	"github.com/prometheus/client_golang/prometheus/push"
+
 	"github.com/appscode/kutil/tools/backup"
 	"github.com/appscode/kutil/tools/clientcmd"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/expfmt"
-	"github.com/the-redback/go-oneliners"
-	"io/ioutil"
-	"path/filepath"
+	_ "github.com/prometheus/client_golang/prometheus/push"
 
 	"github.com/appscode/go/flags"
 	"github.com/appscodelabs/actions/cluster/pkg/restic"
@@ -30,8 +33,17 @@ type options struct {
 	secretDir      string
 	enableCache    bool
 	hostname       string
+	outputDir      string
 
-	outputDir string
+	pushgatewayURL  string
+	retentionPolicy retentionPolicy
+}
+
+type retentionPolicy struct {
+	policy string
+	value  string
+	prune  bool
+	dryRun bool
 }
 
 func NewCmdBackup() *cobra.Command {
@@ -50,7 +62,7 @@ func NewCmdBackup() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			flags.EnsureRequiredFlags(cmd, "kubeconfig", "context", "provider", "path", "secret-dir")
 
-			// ============ Dump YAML of cluster resources =======================
+			// Dump YAML of cluster resources
 			restConfig, err := clientcmd.BuildConfigFromContext(opt.kubeconfigPath, opt.context)
 			if err != nil {
 				return err
@@ -63,45 +75,70 @@ func NewCmdBackup() *cobra.Command {
 			fmt.Printf("Cluster objects are stored in %s", filename)
 			fmt.Println()
 
-			// ============== Setup Environment variables for restic cli ===================
+			// Setup Environment variables for restic cli
 			w := restic.New(opt.scratchDir, opt.enableCache, opt.hostname)
 			err = w.SetupEnv(opt.provider, opt.bucket, opt.endpoint, opt.path, opt.secretDir)
 			if err != nil {
 				return err
 			}
 
-			// ============== Initialize restic repository if it does not exist ================
+			// Initialize restic repository if it does not exist
 			_, err = w.InitRepositoryIfAbsent()
 			if err != nil {
 				return err
 			}
 
-			// ============ Backup YAML of cluster resources that has been dumped in the directory pointed by opt.backupDir =====
+			// Backup YAML of cluster resources that has been dumped in the directory pointed by opt.backupDir
 			out, err := w.Backup(opt.backupDir, nil)
 			if err != nil {
 				fmt.Println(err)
 				return err
 			}
 
-			// ================== Parse output of backup command =================
+			// Parse output of backup command
 			backupOutput, err := restic.ParseBackupOutput(out)
 			if err != nil {
 				return err
 			}
 
-			// ================== Write output of backup command into output.json to the directory pointed by opt.outputDir =============
+			// Check repository integrity
+			out, err = w.Check()
+			if err != nil {
+				return err
+			}
+			// Parse output of "check" command
+			backupOutput.Integrity = types.BoolP(restic.ParseCheckOutput(out))
+
+			// Cleanup old snapshot according to retention policy
+			out, err = w.Cleanup(opt.retentionPolicy.policy, opt.retentionPolicy.value, opt.retentionPolicy.prune, opt.retentionPolicy.dryRun)
+			if err != nil {
+				return err
+			}
+			// Parse output of cleanup command to extract information
+			fmt.Println(string(out))
+
+
+			// Read repository statics after cleanup
+			out,err=w.Stats()
+			if err!=nil{
+				return err
+			}
+			fmt.Println("==================================================\n",string(out))
+			// Write output of "backup" command into output.json to the directory pointed by opt.outputDir
 			err = restic.WriteOutput(backupOutput, opt.outputDir)
 			if err != nil {
 				return err
 			}
 
-			// ================ Generate Prometheus metrics from backupOutput ================
+			// Generate Prometheus metrics from backupOutput
 			backupMetrics := restic.NewBackupMetrics()
 			err = backupMetrics.SetValues(backupOutput)
 			if err != nil {
 				return err
 			}
-			registry:=prometheus.NewRegistry()
+
+			// Write Metrics to metrics.prom file in output directory
+			registry := prometheus.NewRegistry()
 			registry.MustRegister(
 				backupMetrics.FileMetrics.TotalFiles,
 				backupMetrics.FileMetrics.NewFiles,
@@ -110,25 +147,26 @@ func NewCmdBackup() *cobra.Command {
 				backupMetrics.DataSize,
 				backupMetrics.DataUploaded,
 				backupMetrics.DataProcessingTime,
-				)
-			err=prometheus.WriteToTextfile(filepath.Join(opt.outputDir,"metrics.prom"),registry)
-			if err!=nil{
+				backupMetrics.RepoIntegrity,
+			)
+
+			// If pushgatewayURL is provided then push metrics to the Pushgateway otherwise write into a file in output directory
+			if opt.pushgatewayURL != "" {
+				pusher := push.New(opt.pushgatewayURL, "cluster-backup")
+				err = pusher.Gatherer(registry).Push()
+				if err != nil {
+					return nil
+				}
+			}
+			err = prometheus.WriteToTextfile(filepath.Join(opt.outputDir, "metrics.prom"), registry)
+			if err != nil {
 				return err
 			}
-			in,err:=ioutil.ReadFile(filepath.Join(opt.outputDir,"metrics.prom"))
-			if err!=nil{
+			_, err = ioutil.ReadFile(filepath.Join(opt.outputDir, "metrics.prom"))
+			if err != nil {
 				return err
 			}
-			var parser expfmt.TextParser
-			metricFamilies,err:=parser.TextToMetricFamilies(bytes.NewReader(in))
-			if err!=nil{
-				return err
-			}
-			for k,v:= range metricFamilies{
-				fmt.Println(k)
-				fmt.Println(*v.Name)
-				oneliners.PrettyJson(v.Metric)
-			}
+
 			return nil
 		},
 	}
@@ -144,5 +182,10 @@ func NewCmdBackup() *cobra.Command {
 	cmd.Flags().BoolVar(&opt.enableCache, "cache", opt.enableCache, "weather to enable cache")
 	cmd.Flags().StringVar(&opt.hostname, "hostname", "", "name of the host machine")
 	cmd.Flags().StringVar(&opt.outputDir, "output-dir", opt.outputDir, "Directory where output.json file will be written")
+	cmd.Flags().StringVar(&opt.pushgatewayURL, "pushgateway-url", "", "Pushgateway URL where the metrics will be pushed")
+	cmd.Flags().StringVar(&opt.retentionPolicy.policy, "retention-policy.policy", "", "")
+	cmd.Flags().StringVar(&opt.retentionPolicy.value, "retention-policy.value", "", "")
+	cmd.Flags().BoolVar(&opt.retentionPolicy.prune, "retention-policy.prune", false, "")
+	cmd.Flags().BoolVar(&opt.retentionPolicy.dryRun, "retention-policy.dryrun", false, "")
 	return cmd
 }
