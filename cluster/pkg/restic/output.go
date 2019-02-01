@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/the-redback/go-oneliners"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -16,143 +15,195 @@ import (
 )
 
 type BackupOutput struct {
-	Snapshot       string    `json:"snapshot,omitempty"`
-	Size           string    `json:"size,omitempty"`
-	Uploaded       string    `json:"uploaded,omitempty"`
-	ProcessingTime string    `json:"processingTime,omitempty"`
-	FileStats      FileStats `json:"fileStats,omitempty"`
-	Integrity      *bool     `json:"integrity,omitempty"`
+	// BackupStats shows statistics of last backup session
+	BackupStats BackupStats `json:"backup,omitempty"`
+	// RepositoryStats shows statistics of repository after last backup
+	RepositoryStats RepositoryStats `json:"repository,omitempty"`
+}
+
+type BackupStats struct {
+	// Snapshot indicates the name of the backup snapshot created in this backup session
+	Snapshot string `json:"snapshot,omitempty"`
+	// Size indicates the size of target data to backup
+	Size string `json:"size,omitempty"`
+	// Uploaded indicates size of data uploaded to backend in this backup session
+	Uploaded string `json:"uploaded,omitempty"`
+	// ProcessingTime indicates time taken to process the target data
+	ProcessingTime string `json:"processingTime,omitempty"`
+	// FileStats shows statistics of files of backup session
+	FileStats FileStats `json:"fileStats,omitempty"`
+}
+type RepositoryStats struct {
+	// Integrity shows result of repository integrity check after last backup
+	Integrity *bool `json:"integrity,omitempty"`
+	// Size show size of repository after last backup
+	Size string `json:"size,omitempty"`
+	// SnapshotCount shows number of snapshots stored in the repository
+	SnapshotCount int `json:"snapshotCount,omitempty"`
+	// SnapshotRemovedOnLastCleanup shows number of old snapshots cleaned up according to retention policy on last backup session
+	SnapshotRemovedOnLastCleanup int `json:"snapshotRemovedOnLastCleanup,omitempty"`
 }
 
 type FileStats struct {
-	TotalFiles      *int `json:"totalFiles,omitempty"`
-	NewFiles        *int `json:"newFiles,omitempty"`
-	ModifiedFiles   *int `json:"modifiedFiles,omitempty"`
+	// TotalFiles shows total number of files that has been backed up
+	TotalFiles *int `json:"totalFiles,omitempty"`
+	// NewFiles shows total number of new files that has been created since last backup
+	NewFiles *int `json:"newFiles,omitempty"`
+	// ModifiedFiles shows total number of files that has been modified since last backup
+	ModifiedFiles *int `json:"modifiedFiles,omitempty"`
+	// UnmodifiedFiles shows total number of files that has not been changed since last backup
 	UnmodifiedFiles *int `json:"unmodifiedFiles,omitempty"`
 }
 
+// WriteOutput write output of backup process into output.json file in the directory
+// specified by outputDir parameter
 func WriteOutput(out *BackupOutput, outputDir string) error {
-	oneliners.PrettyJson(out, "Output")
 	jsonOuput, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
 	}
-	return writeOutputJson(jsonOuput, outputDir)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return err
+	}
+	fileName := filepath.Join(outputDir, "output.json")
+	if err := ioutil.WriteFile(fileName, jsonOuput, 0755); err != nil {
+		return err
+	}
+	return nil
 }
 
-func ParseBackupOutput(output []byte) (*BackupOutput, error) {
-	res := &BackupOutput{}
+// ExtractBackupInfo extract information from output of "restic backup" command and
+// save valuable information into backupOutput
+func (backupOutput *BackupOutput) ExtractBackupInfo(output []byte) error {
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	var line string
 	for scanner.Scan() {
 		line = scanner.Text()
 		if strings.HasPrefix(line, "Files:") {
 			info := strings.FieldsFunc(line, separators)
-			fmt.Println("len: ", len(info), "Slice: ", info)
 			if len(info) < 7 {
-				return nil, fmt.Errorf("failed to parse files statistics")
+				return fmt.Errorf("failed to parse files statistics")
 			}
 			newFiles, err := strconv.Atoi(info[1])
 			if err != nil {
-				return nil, err
+				return err
 			}
 			modifiedFiles, err := strconv.Atoi(info[3])
 			if err != nil {
-				return nil, err
+				return err
 			}
 			unmodifiedFiles, err := strconv.Atoi(info[5])
 			if err != nil {
-				return nil, err
+				return err
 			}
-			res.FileStats.NewFiles = types.IntP(newFiles)
-			res.FileStats.ModifiedFiles = types.IntP(modifiedFiles)
-			res.FileStats.UnmodifiedFiles = types.IntP(unmodifiedFiles)
+			backupOutput.BackupStats.FileStats.NewFiles = types.IntP(newFiles)
+			backupOutput.BackupStats.FileStats.ModifiedFiles = types.IntP(modifiedFiles)
+			backupOutput.BackupStats.FileStats.UnmodifiedFiles = types.IntP(unmodifiedFiles)
 		} else if strings.HasPrefix(line, "Added to the repo:") {
 			info := strings.FieldsFunc(line, separators)
 			length := len(info)
 			if length < 6 {
-				return nil, fmt.Errorf("failed to parse upload statistics")
+				return fmt.Errorf("failed to parse upload statistics")
 			}
-			res.Uploaded = info[length-2] + " " + info[length-1]
+			backupOutput.BackupStats.Uploaded = info[length-2] + " " + info[length-1]
 		} else if strings.HasPrefix(line, "processed") {
 			info := strings.FieldsFunc(line, separators)
 			length := len(info)
 			if length < 7 {
-				return nil, fmt.Errorf("failed to parse file processing statistics")
+				return fmt.Errorf("failed to parse file processing statistics")
 			}
 			totalFiles, err := strconv.Atoi(info[1])
 			if err != nil {
-				return nil, err
+				return err
 			}
-			res.FileStats.TotalFiles = types.IntP(totalFiles)
-			res.Size = info[3] + " " + info[4]
+			backupOutput.BackupStats.FileStats.TotalFiles = types.IntP(totalFiles)
+			backupOutput.BackupStats.Size = info[3] + " " + info[4]
 			m, s, err := convertToMinutesSeconds(info[6])
 			if err != nil {
-				return nil, err
+				return err
 			}
-			res.ProcessingTime = fmt.Sprintf("%dm%ds", m, s)
+			backupOutput.BackupStats.ProcessingTime = fmt.Sprintf("%dm%ds", m, s)
 		} else if strings.HasPrefix(line, "snapshot") && strings.HasSuffix(line, "saved") {
 			info := strings.FieldsFunc(line, separators)
 			length := len(info)
 			if length < 3 {
-				return nil, fmt.Errorf("failed to parse snapshot statistics")
+				return fmt.Errorf("failed to parse snapshot statistics")
 			}
-			res.Snapshot = info[1]
+			backupOutput.BackupStats.Snapshot = info[1]
 		}
 	}
-	return res, nil
+	return nil
 }
 
-func ParseCheckOutput(out []byte) bool {
+// ExtractCheckInfo extract information from output of "restic check" command and
+// save valuable information into backupOutput
+func (backupOutput *BackupOutput) ExtractCheckInfo(out []byte) {
 	scanner := bufio.NewScanner(bytes.NewReader(out))
 	var line string
 	for scanner.Scan() {
 		line = scanner.Text()
 		line = strings.TrimSpace(line)
 		if line == "no errors were found" {
-			return true
+			backupOutput.RepositoryStats.Integrity = types.BoolP(true)
+			return
 		}
 	}
-	return false
+	backupOutput.RepositoryStats.Integrity = types.BoolP(false)
 }
 
-func convertToMinutesSeconds(time string) (int, int, error) {
-	parts := strings.Split(time, ":")
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("failed to convert minutes")
+// ExtractCleanupInfo extract information from output of "restic forget" command and
+// save valuable information into backupOutput
+func (backupOutput *BackupOutput) ExtractCleanupInfo(out []byte) error {
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	var line string
+	for scanner.Scan() {
+		line = scanner.Text()
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "keep") && strings.HasSuffix(line, "snapshots:") {
+			parts := strings.FieldsFunc(line, separators)
+			length := len(parts)
+			if length < 3 {
+				return fmt.Errorf("failed to parse current available snapshot statistics")
+			}
+			snapshotCount, err := strconv.Atoi(parts[1])
+			if err != nil {
+				return err
+			}
+			backupOutput.RepositoryStats.SnapshotCount = snapshotCount
+		}
+		if strings.HasPrefix(line, "remove") && strings.HasSuffix(line, "snapshots:") {
+			parts := strings.FieldsFunc(line, separators)
+			length := len(parts)
+			if length < 3 {
+				return fmt.Errorf("failed to parse cleaned snapshot statistics")
+			}
+			snapshotRemoved, err := strconv.Atoi(parts[1])
+			if err != nil {
+				return err
+			}
+			backupOutput.RepositoryStats.SnapshotRemovedOnLastCleanup = snapshotRemoved
+		}
 	}
-	minutes, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, 0, err
-	}
-
-	fraction, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return 0, 0, err
-	}
-	seconds := int((fraction * 60) / 100)
-	if seconds >= 60 {
-		m := int(seconds / 60)
-		minutes = minutes + m
-		seconds = seconds - m*60
-	}
-
-	return minutes, seconds, nil
+	return nil
 }
 
-func separators(r rune) bool {
-	return r == ' ' || r == '\t' || r == ','
-}
-func writeOutputJson(data []byte, dir string) error {
+// ExtractStatsInfo extract information from output of "restic stats" command and
+// save valuable information into backupOutput
+func (backupOutput *BackupOutput) ExtractStatsInfo(out []byte) error {
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	var line string
+	for scanner.Scan() {
+		line = scanner.Text()
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Total Size:") {
+			parts := strings.FieldsFunc(line, separators)
+			length := len(parts)
+			if length < 4 {
+				return fmt.Errorf("failed to parse repository statistics")
+			}
 
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		fmt.Println("Failed to make directory: ", dir)
-		return err
+			backupOutput.RepositoryStats.Size = parts[2] + " " + parts[3]
+		}
 	}
-	fileName := filepath.Join(dir, "output.json")
-	if err := ioutil.WriteFile(fileName, data, 0755); err != nil {
-		return err
-	}
-
 	return nil
 }

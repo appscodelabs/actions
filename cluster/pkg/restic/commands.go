@@ -13,16 +13,6 @@ const (
 	Exe = "/usr/local/bin/restic"
 )
 
-const (
-	KeepLast    string = "--keep-last"
-	KeepHourly  string = "--keep-hourly"
-	KeepDaily   string = "--keep-daily"
-	KeepWeekly  string = "--keep-weekly"
-	KeepMonthly string = "--keep-monthly"
-	KeepYearly  string = "--keep-yearly"
-	KeepTag     string = "--keep-tag"
-)
-
 type Snapshot struct {
 	ID       string    `json:"id"`
 	Time     time.Time `json:"time"`
@@ -58,6 +48,7 @@ func (w *ResticWrapper) DeleteSnapshots(snapshotIDs []string) ([]byte, error) {
 }
 
 func (w *ResticWrapper) InitRepositoryIfAbsent() ([]byte, error) {
+	log.Infoln("Ensuring restic repository in the backend")
 	args := w.appendCacheDirFlag([]interface{}{"snapshots", "--json"})
 	args = w.appendCaCertFlag(args)
 	if _, err := w.run(Exe, args); err != nil {
@@ -70,6 +61,7 @@ func (w *ResticWrapper) InitRepositoryIfAbsent() ([]byte, error) {
 }
 
 func (w *ResticWrapper) Backup(path string, tags []string) ([]byte, error) {
+	log.Infoln("Backing up target data")
 	args := []interface{}{"backup", path}
 	if w.hostname != "" {
 		args = append(args, "--host")
@@ -87,8 +79,13 @@ func (w *ResticWrapper) Backup(path string, tags []string) ([]byte, error) {
 }
 
 func (w *ResticWrapper) Cleanup(policy, value string, prune, dryRun bool) ([]byte, error) {
+	log.Infoln("Cleaning old snapshots according to retention policy")
 
 	args := []interface{}{"forget"}
+
+	if !strings.HasPrefix(policy, "--") {
+		policy = "--" + policy
+	}
 
 	args = append(args, policy)
 	args = append(args, value)
@@ -111,6 +108,7 @@ func (w *ResticWrapper) Cleanup(policy, value string, prune, dryRun bool) ([]byt
 }
 
 func (w *ResticWrapper) Restore(path, host, snapshotID string) ([]byte, error) {
+	log.Infoln("Restoring backed up data")
 	args := []interface{}{"restore"}
 	if snapshotID != "" {
 		args = append(args, snapshotID)
@@ -134,6 +132,7 @@ func (w *ResticWrapper) Restore(path, host, snapshotID string) ([]byte, error) {
 }
 
 func (w *ResticWrapper) Check() ([]byte, error) {
+	log.Infoln("Checking integrity of repository")
 	args := w.appendCacheDirFlag([]interface{}{"check"})
 	args = w.appendCaCertFlag(args)
 
@@ -141,8 +140,9 @@ func (w *ResticWrapper) Check() ([]byte, error) {
 }
 
 func (w *ResticWrapper) Stats() ([]byte, error) {
+	log.Infoln("Reading repository status")
 	args := w.appendCacheDirFlag([]interface{}{"stats"})
-	args = append(args,"--mode=raw-data","--quiet")
+	args = append(args, "--mode=raw-data", "--quiet")
 	args = w.appendCaCertFlag(args)
 
 	return w.run(Exe, args)

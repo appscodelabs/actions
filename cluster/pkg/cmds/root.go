@@ -5,17 +5,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var(
+var (
 	Sanitize bool
 )
 
 func NewRootCmd() *cobra.Command {
 	var rootCmd = &cobra.Command{
-		Use:                        "cluster-tool",
-		Short:                      "cluster-tool by AppsCode - Backup cluster yaml",
-		Long:                       "cluster-tool is a tool to take restic cluster's yaml using restic",
-		Example:                    "cluster-tool restic --sanitize=true --restic-dir=/tmp/restic",
-		DisableAutoGenTag:          true,
+		Use:               "cluster-tool",
+		Short:             "cluster-tool by AppsCode - Backup cluster yaml",
+		Long:              "cluster-tool is a tool to take restic cluster's yaml using restic",
+		Example:           "cluster-tool restic --sanitize=true --restic-dir=/tmp/restic",
+		DisableAutoGenTag: true,
 	}
 
 	rootCmd.PersistentFlags().AddGoFlagSet(flag.CommandLine)

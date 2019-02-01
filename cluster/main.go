@@ -1,11 +1,11 @@
 package main
 
 import (
-	"os"
-	"runtime"
-	"github.com/appscodelabs/actions/cluster/pkg/cmds"
 	"github.com/appscode/go/log"
 	logs "github.com/appscode/go/log/golog"
+	"github.com/appscodelabs/actions/cluster/pkg/cmds"
+	"os"
+	"runtime"
 )
 
 func main() {
@@ -19,6 +19,6 @@ func main() {
 	if err := cmds.NewRootCmd().Execute(); err != nil {
 		log.Fatalln("Failed to execute root command:", err)
 	}
-	log.Infoln("Exiting  Main")
+	log.Infoln("Backup Successful")
 	os.Exit(0)
 }

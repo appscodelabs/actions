@@ -2,190 +2,174 @@ package cmds
 
 import (
 	"fmt"
-	"io/ioutil"
 	"path/filepath"
 
-	"github.com/appscode/go/types"
-
-	"github.com/prometheus/client_golang/prometheus/push"
-
-	"github.com/appscode/kutil/tools/backup"
-	"github.com/appscode/kutil/tools/clientcmd"
-	"github.com/prometheus/client_golang/prometheus"
-	_ "github.com/prometheus/client_golang/prometheus/push"
-
 	"github.com/appscode/go/flags"
+	"github.com/appscode/kutil/tools/backup"
 	"github.com/appscodelabs/actions/cluster/pkg/restic"
 	"github.com/spf13/cobra"
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/homedir"
 )
 
 type options struct {
+	masterUrl      string
 	kubeconfigPath string
 	context        string
-	scratchDir     string
 	sanitize       bool
 	backupDir      string
-	provider       string
-	bucket         string
-	endpoint       string
-	path           string
-	secretDir      string
-	enableCache    bool
-	hostname       string
-	outputDir      string
-
-	pushgatewayURL  string
-	retentionPolicy retentionPolicy
+	backup         restic.BackupOptions
+	metrics        restic.MetricsOptions
 }
 
-type retentionPolicy struct {
-	policy string
-	value  string
-	prune  bool
-	dryRun bool
-}
+const (
+	JobClusterTools = "cluster-tools"
+)
 
 func NewCmdBackup() *cobra.Command {
 
 	opt := options{
-		backupDir:   "/tmp/restic/backup",
-		scratchDir:  "/tmp/restic/scratch",
-		enableCache: false,
-		outputDir:   "/tmp/restic/output",
+		kubeconfigPath: filepath.Join(homedir.HomeDir(), ".kube", "config"),
+		backupDir:      "/tmp/restic/backup",
+		backup: restic.BackupOptions{
+			ScratchDir:  "/tmp/restic/scratch",
+			EnableCache: false,
+		},
 	}
 
 	cmd := &cobra.Command{
 		Use:               "backup",
-		Short:             "Takes a backup of Kubernetes api objects",
+		Short:             "Takes a backup YAMLs of Kubernetes api objects",
 		DisableAutoGenTag: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			flags.EnsureRequiredFlags(cmd, "kubeconfig", "context", "provider", "path", "secret-dir")
+			flags.EnsureRequiredFlags(cmd, "provider", "path", "secret-dir", "retention-policy.policy", "retention-policy.value")
 
-			// Dump YAML of cluster resources
-			restConfig, err := clientcmd.BuildConfigFromContext(opt.kubeconfigPath, opt.context)
-			if err != nil {
-				return err
-			}
-			mgr := backup.NewBackupManager(opt.context, restConfig, opt.sanitize)
-			filename, err := mgr.BackupToDir(opt.backupDir)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Cluster objects are stored in %s", filename)
-			fmt.Println()
+			// Run backup
+			backupOutput, backupErr := runBackup(&opt.backup, opt.masterUrl, opt.kubeconfigPath, opt.context, opt.backupDir, opt.sanitize)
 
-			// Setup Environment variables for restic cli
-			w := restic.New(opt.scratchDir, opt.enableCache, opt.hostname)
-			err = w.SetupEnv(opt.provider, opt.bucket, opt.endpoint, opt.path, opt.secretDir)
-			if err != nil {
-				return err
-			}
-
-			// Initialize restic repository if it does not exist
-			_, err = w.InitRepositoryIfAbsent()
-			if err != nil {
-				return err
-			}
-
-			// Backup YAML of cluster resources that has been dumped in the directory pointed by opt.backupDir
-			out, err := w.Backup(opt.backupDir, nil)
-			if err != nil {
-				fmt.Println(err)
-				return err
-			}
-
-			// Parse output of backup command
-			backupOutput, err := restic.ParseBackupOutput(out)
-			if err != nil {
-				return err
-			}
-
-			// Check repository integrity
-			out, err = w.Check()
-			if err != nil {
-				return err
-			}
-			// Parse output of "check" command
-			backupOutput.Integrity = types.BoolP(restic.ParseCheckOutput(out))
-
-			// Cleanup old snapshot according to retention policy
-			out, err = w.Cleanup(opt.retentionPolicy.policy, opt.retentionPolicy.value, opt.retentionPolicy.prune, opt.retentionPolicy.dryRun)
-			if err != nil {
-				return err
-			}
-			// Parse output of cleanup command to extract information
-			fmt.Println(string(out))
-
-
-			// Read repository statics after cleanup
-			out,err=w.Stats()
-			if err!=nil{
-				return err
-			}
-			fmt.Println("==================================================\n",string(out))
-			// Write output of "backup" command into output.json to the directory pointed by opt.outputDir
-			err = restic.WriteOutput(backupOutput, opt.outputDir)
-			if err != nil {
-				return err
-			}
-
-			// Generate Prometheus metrics from backupOutput
-			backupMetrics := restic.NewBackupMetrics()
-			err = backupMetrics.SetValues(backupOutput)
-			if err != nil {
-				return err
-			}
-
-			// Write Metrics to metrics.prom file in output directory
-			registry := prometheus.NewRegistry()
-			registry.MustRegister(
-				backupMetrics.FileMetrics.TotalFiles,
-				backupMetrics.FileMetrics.NewFiles,
-				backupMetrics.FileMetrics.ModifiedFiles,
-				backupMetrics.FileMetrics.UnmodifiedFiles,
-				backupMetrics.DataSize,
-				backupMetrics.DataUploaded,
-				backupMetrics.DataProcessingTime,
-				backupMetrics.RepoIntegrity,
-			)
-
-			// If pushgatewayURL is provided then push metrics to the Pushgateway otherwise write into a file in output directory
-			if opt.pushgatewayURL != "" {
-				pusher := push.New(opt.pushgatewayURL, "cluster-backup")
-				err = pusher.Gatherer(registry).Push()
+			// If metrics are enabled then generate metrics
+			if opt.metrics.Enabled {
+				err := opt.metrics.HandleMetrics(backupOutput, backupErr, JobClusterTools)
 				if err != nil {
-					return nil
+					return errors.NewAggregate([]error{backupErr, err})
 				}
 			}
-			err = prometheus.WriteToTextfile(filepath.Join(opt.outputDir, "metrics.prom"), registry)
-			if err != nil {
-				return err
-			}
-			_, err = ioutil.ReadFile(filepath.Join(opt.outputDir, "metrics.prom"))
-			if err != nil {
-				return err
-			}
 
-			return nil
+			// If output directory specified, then write the output in "output.json" file in the specified directory
+			if backupErr == nil && opt.backup.OutputDir != "" {
+				err := restic.WriteOutput(backupOutput, opt.backup.OutputDir)
+				if err != nil {
+					return err
+				}
+			}
+			return backupErr
 		},
 	}
-	cmd.Flags().BoolVar(&opt.sanitize, "sanitize", false, " Sanitize fields in YAML")
-	cmd.Flags().StringVar(&opt.backupDir, "backup-dr", opt.backupDir, "Directory where YAML files will be stored")
-	cmd.Flags().StringVar(&opt.kubeconfigPath, "kubeconfig", "", "kubeconfig file pointing at the 'core' kubernetes server")
-	cmd.Flags().StringVar(&opt.context, "context", "", "Name of the kubeconfig context to use")
-	cmd.Flags().StringVar(&opt.provider, "provider", "", "Backend provider (i.e. gcs, s3, azure etc)")
-	cmd.Flags().StringVar(&opt.bucket, "bucket", "", "bucket name")
-	cmd.Flags().StringVar(&opt.endpoint, "endpoint", "", "endpoint for s3/s3 compatible backend")
-	cmd.Flags().StringVar(&opt.path, "path", "", "directory inside the bucket where backup will be stored")
-	cmd.Flags().StringVar(&opt.secretDir, "secret-dir", "", "directory where storage secret has been mounted")
-	cmd.Flags().BoolVar(&opt.enableCache, "cache", opt.enableCache, "weather to enable cache")
-	cmd.Flags().StringVar(&opt.hostname, "hostname", "", "name of the host machine")
-	cmd.Flags().StringVar(&opt.outputDir, "output-dir", opt.outputDir, "Directory where output.json file will be written")
-	cmd.Flags().StringVar(&opt.pushgatewayURL, "pushgateway-url", "", "Pushgateway URL where the metrics will be pushed")
-	cmd.Flags().StringVar(&opt.retentionPolicy.policy, "retention-policy.policy", "", "")
-	cmd.Flags().StringVar(&opt.retentionPolicy.value, "retention-policy.value", "", "")
-	cmd.Flags().BoolVar(&opt.retentionPolicy.prune, "retention-policy.prune", false, "")
-	cmd.Flags().BoolVar(&opt.retentionPolicy.dryRun, "retention-policy.dryrun", false, "")
+	cmd.Flags().StringVar(&opt.masterUrl, "master-url", "", "URL of master node")
+	cmd.Flags().StringVar(&opt.kubeconfigPath, "kubeconfig", opt.kubeconfigPath, "kubeconfig file pointing at the 'core' kubernetes server")
+	cmd.Flags().StringVar(&opt.context, "context", "", "Context to use from kubeconfig file")
+	cmd.Flags().BoolVar(&opt.sanitize, "sanitize", false, " Sanitize YAML files")
+	cmd.Flags().StringVar(&opt.backupDir, "backup-dir", opt.backupDir, "Directory where dumped YAML files will be stored temporarily")
+
+	cmd.Flags().BoolVar(&opt.backup.EnableCache, "cache", opt.backup.EnableCache, "Specify weather to enable caching for restic")
+	cmd.Flags().StringVar(&opt.backup.Hostname, "hostname", "", "Name of the host machine")
+
+	cmd.Flags().StringVar(&opt.backup.Provider, "provider", "", "Backend provider (i.e. gcs, s3, azure etc)")
+	cmd.Flags().StringVar(&opt.backup.SecretDir, "secret-dir", "", "Directory where storage secret has been mounted")
+	cmd.Flags().StringVar(&opt.backup.Bucket, "bucket", "", "Name of the cloud bucket/container (keep empty for local backend)")
+	cmd.Flags().StringVar(&opt.backup.Endpoint, "endpoint", "", "Endpoint for s3/s3 compatible backend")
+	cmd.Flags().StringVar(&opt.backup.Path, "path", "", "Directory inside the bucket where backup will be stored")
+	cmd.Flags().StringVar(&opt.backup.OutputDir, "output-dir", "", "Directory where output.json file will be written (keep empty if you don't need to write output in file)")
+
+	cmd.Flags().StringVar(&opt.backup.RetentionPolicy.Policy, "retention-policy.policy", "", "Specify a retention policy")
+	cmd.Flags().StringVar(&opt.backup.RetentionPolicy.Value, "retention-policy.value", "", "Value for specified retention policy")
+	cmd.Flags().BoolVar(&opt.backup.RetentionPolicy.Prune, "retention-policy.prune", false, "Specify weather to prune old snapshot data")
+	cmd.Flags().BoolVar(&opt.backup.RetentionPolicy.DryRun, "retention-policy.dryrun", false, "Specify weather to test retention policy without deleting actual data")
+
+	cmd.Flags().BoolVar(&opt.metrics.Enabled, "metrics.enabled", false, "Specify weather to export Prometheus metrics")
+	cmd.Flags().StringVar(&opt.metrics.PushgatewayURL, "metrics.pushgateway-url", "", "Pushgateway URL where the metrics will be pushed")
+	cmd.Flags().StringVar(&opt.metrics.MetricFileDir, "metrics.dir", "", "Directory where to write metric.prom file (keep empty if you don't want to write metric in a text file)")
+	cmd.Flags().StringSliceVar(&opt.metrics.Labels, "metrics.labels", nil, "Labels to apply in exported metrics")
+
 	return cmd
+}
+
+func runBackup(backupOpt *restic.BackupOptions, masterUrl, kubeconfigPath, context, backupDir string, sanitize bool) (*restic.BackupOutput, error) {
+	config, err := clientcmd.BuildConfigFromFlags(masterUrl, kubeconfigPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if context == "" {
+		cfg, err := clientcmd.LoadFromFile(kubeconfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get current context from kubeconfig file. Reason: %v", err)
+		}
+		context = cfg.CurrentContext
+	}
+	mgr := backup.NewBackupManager(context, config, sanitize)
+
+	_, err = mgr.BackupToDir(backupDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Setup Environment variables for restic cli
+	w := restic.NewResticWrapper(backupOpt.ScratchDir, backupOpt.EnableCache, backupOpt.Hostname)
+	err = w.SetupEnv(backupOpt.Provider, backupOpt.Bucket, backupOpt.Endpoint, backupOpt.Path, backupOpt.SecretDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize restic repository if it does not exist
+	_, err = w.InitRepositoryIfAbsent()
+	if err != nil {
+		return nil, err
+	}
+
+	// Backup the dumped YAMLs stored temporarily in opt.backupDir
+	out, err := w.Backup(backupDir, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	backupOutput := &restic.BackupOutput{}
+
+	// Extract information from the output of backup command
+	err = backupOutput.ExtractBackupInfo(out)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check repository integrity
+	out, err = w.Check()
+	if err != nil {
+		return nil, err
+	}
+	// Extract information from output of "check" command
+	backupOutput.ExtractCheckInfo(out)
+
+	// Cleanup old snapshot according to retention policy
+	out, err = w.Cleanup(backupOpt.RetentionPolicy.Policy, backupOpt.RetentionPolicy.Value, backupOpt.RetentionPolicy.Prune, backupOpt.RetentionPolicy.DryRun)
+	if err != nil {
+		return nil, err
+	}
+	// Extract information from output of cleanup command
+	err = backupOutput.ExtractCleanupInfo(out)
+	if err != nil {
+		return nil, err
+	}
+
+	// Read repository statics after cleanup
+	out, err = w.Stats()
+	if err != nil {
+		return nil, err
+	}
+	// Extract information from output of "stats" command
+	err = backupOutput.ExtractStatsInfo(out)
+	if err != nil {
+		return nil, err
+	}
+	return backupOutput, nil
 }
