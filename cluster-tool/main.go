@@ -1,11 +1,12 @@
 package main
 
 import (
+	"os"
+	"runtime"
+
 	"github.com/appscode/go/log"
 	logs "github.com/appscode/go/log/golog"
 	"github.com/appscodelabs/actions/cluster-tool/pkg/cmds"
-	"os"
-	"runtime"
 )
 
 func main() {

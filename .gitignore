@@ -24,6 +24,7 @@ _testmain.go
 *.prof
 .idea/
 dist/
+cluster-tool/dist/
 **/junit.xml
 **/.env
 .vscode/
