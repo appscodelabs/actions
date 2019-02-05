@@ -1,16 +1,12 @@
 package cmds
 
 import (
-	"fmt"
-	"path/filepath"
-
 	"github.com/appscode/go/flags"
 	"github.com/appscode/kutil/tools/backup"
 	"github.com/appscode/kutil/tools/restic"
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/util/homedir"
 )
 
 type options struct {
@@ -30,8 +26,7 @@ const (
 func NewCmdBackup() *cobra.Command {
 
 	opt := options{
-		kubeconfigPath: filepath.Join(homedir.HomeDir(), ".kube", "config"),
-		backupDir:      "/tmp/restic/backup",
+		backupDir: "/tmp/restic/backup",
 		backup: restic.BackupOptions{
 			ScratchDir:  "/tmp/restic/scratch",
 			EnableCache: false,
@@ -103,10 +98,12 @@ func runBackup(backupOpt *restic.BackupOptions, masterUrl, kubeconfigPath, conte
 
 	if context == "" {
 		cfg, err := clientcmd.LoadFromFile(kubeconfigPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get current context from kubeconfig file. Reason: %v", err)
+		if err == nil {
+			context = cfg.CurrentContext
+		}else{
+			// using incluster config. so no context. use default.
+			context = "default"
 		}
-		context = cfg.CurrentContext
 	}
 	mgr := backup.NewBackupManager(context, config, sanitize)
 

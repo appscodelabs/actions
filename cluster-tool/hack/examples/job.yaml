@@ -1,0 +1,81 @@
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-view
+  labels:
+    app: cluster-tool
+rules:
+- apiGroups:
+  - "*"
+  resources:
+  - "*"
+  verbs: ["get","list"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name:  cluster-backup
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-view
+  labels:
+    app: cluster-tool
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-view
+subjects:
+- kind: ServiceAccount
+  name: cluster-backup
+  namespace: default
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name:  cluster-backup
+spec:
+  template:
+    metadata:
+      name:  cluster-backup
+    spec:
+      serviceAccountName: cluster-backup
+      containers:
+      - image:  appscodeci/cluster-tool:v1
+        name:  cluster-tool
+        args:
+        - backup
+        - --sanitize=true
+        - --provider=local
+        - --hostname=cluster-tool
+        - --secret-dir=/etc/secrets/storage-secret
+        - --path=/safe/data/restic-repo
+        - --output-dir=/safe/data
+        - --retention-policy.policy=keep-last
+        - --retention-policy.value=5
+        - --retention-policy.prune=true
+        - --metrics.enabled=true
+        - --metrics.pushgateway-url=http://stash-operator.kube-system.svc:56789
+        - --metrics.labels="Kind=Job,Name=cluster-view"
+        - --metrics.dir=/safe/data
+        volumeMounts:
+        - name: temp-dir
+          mountPath: /tmp/restic
+        - name: local-repo
+          mountPath: /safe/data
+        - name: storage-secret
+          mountPath: /etc/secrets/storage-secret
+      volumes:
+      - name: temp-dir
+        emptyDir: {}
+      - name: local-repo
+        hostPath:
+          path: /data/restic-repo
+      - name:  storage-secret
+        secret:
+          defaultMode: 420
+          secretName: local-secret
+      restartPolicy: Never

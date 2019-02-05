@@ -12,7 +12,8 @@ COPY ./cluster-tool/ .
 RUN set -x \
     && wget https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2 \
     && bzip2 -d ./restic_${RESTIC_VERSION}_linux_amd64.bz2 \
-    && mv ./restic_${RESTIC_VERSION}_linux_amd64 ./restic
+    && mv ./restic_${RESTIC_VERSION}_linux_amd64 ./restic \
+    && chmod +x ./restic
 
 # Build cluster-tool binary
 RUN CGO_ENABLED=0 GOOS=linux go build -o ./cluster-tool ./main.go
