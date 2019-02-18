@@ -45,7 +45,7 @@ func NewCmdBackup() *cobra.Command {
 
 			// If metrics are enabled then generate metrics
 			if opt.metrics.Enabled {
-				err := opt.metrics.HandleMetrics(backupOutput, backupErr, JobClusterTools)
+				err := backupOutput.HandleMetrics(&opt.metrics, backupErr, JobClusterTools)
 				if err != nil {
 					return errors.NewAggregate([]error{backupErr, err})
 				}
@@ -100,7 +100,7 @@ func runBackup(backupOpt *restic.BackupOptions, masterUrl, kubeconfigPath, conte
 		cfg, err := clientcmd.LoadFromFile(kubeconfigPath)
 		if err == nil {
 			context = cfg.CurrentContext
-		}else{
+		} else {
 			// using incluster config. so no context. use default.
 			context = "default"
 		}
@@ -134,7 +134,7 @@ func runBackup(backupOpt *restic.BackupOptions, masterUrl, kubeconfigPath, conte
 	backupOutput := &restic.BackupOutput{}
 
 	// Extract information from the output of backup command
-	err = backupOutput.ExtractBackupInfo(out)
+	err = backupOutput.ExtractBackupInfo(out, backupDir)
 	if err != nil {
 		return nil, err
 	}

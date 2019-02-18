@@ -1,21 +1,30 @@
 package restic
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/push"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-type Metrics struct {
-	// BackupMetrics shows metrics related to last backup session
-	BackupMetrics *BackupMetrics
+type BackupMetrics struct {
+	// BackupSessionMetrics shows metrics related to last backup session
+	BackupSessionMetrics *BackupSessionMetrics
 	// RepositoryMetrics shows metrics related to repository after last backup
 	RepositoryMetrics *RepositoryMetrics
 }
 
-type BackupMetrics struct {
+type RestoreMetrics struct {
+	// RestoreSuccess show weather the current restore session succeeded or not
+	RestoreSuccess prometheus.Gauge
+	// RestoreDuration show total time taken to complete the restore session
+	RestoreDuration prometheus.Gauge
+}
+
+type BackupSessionMetrics struct {
 	// BackupSuccess show weather the current backup session succeeded or not
 	BackupSuccess prometheus.Gauge
 	// DataSize shows total size of the target data to backup (in bytes)
@@ -27,6 +36,7 @@ type BackupMetrics struct {
 	// FileMetrics shows information of backup files
 	FileMetrics *FileMetrics
 }
+
 type FileMetrics struct {
 	// TotalFiles shows total number of files that has been backed up
 	TotalFiles prometheus.Gauge
@@ -48,6 +58,7 @@ type RepositoryMetrics struct {
 	// SnapshotRemovedOnLastCleanup shows number of old snapshots cleaned up according to retention policy on last backup session
 	SnapshotRemovedOnLastCleanup prometheus.Gauge
 }
+
 type MetricsOptions struct {
 	Enabled        bool
 	PushgatewayURL string
@@ -55,22 +66,22 @@ type MetricsOptions struct {
 	Labels         []string
 }
 
-func NewMetrics(labels prometheus.Labels) *Metrics {
+func newBackupMetrics(labels prometheus.Labels) *BackupMetrics {
 
-	return &Metrics{
-		BackupMetrics: &BackupMetrics{
+	return &BackupMetrics{
+		BackupSessionMetrics: &BackupSessionMetrics{
 			BackupSuccess: prometheus.NewGauge(
 				prometheus.GaugeOpts{
-					Namespace:   "restic",
+					Namespace:   "stash",
 					Subsystem:   "backup",
-					Name:        "success",
+					Name:        "session_success",
 					Help:        "Indicates weather the current backup session succeeded or not",
 					ConstLabels: labels,
 				},
 			),
 			DataSize: prometheus.NewGauge(
 				prometheus.GaugeOpts{
-					Namespace:   "restic",
+					Namespace:   "stash",
 					Subsystem:   "backup",
 					Name:        "data_size_bytes",
 					Help:        "Total size of the target data to backup (in bytes)",
@@ -79,7 +90,7 @@ func NewMetrics(labels prometheus.Labels) *Metrics {
 			),
 			DataUploaded: prometheus.NewGauge(
 				prometheus.GaugeOpts{
-					Namespace:   "restic",
+					Namespace:   "stash",
 					Subsystem:   "backup",
 					Name:        "data_uploaded_bytes",
 					Help:        "Amount of data uploaded to the repository in this session (in bytes)",
@@ -88,7 +99,7 @@ func NewMetrics(labels prometheus.Labels) *Metrics {
 			),
 			DataProcessingTime: prometheus.NewGauge(
 				prometheus.GaugeOpts{
-					Namespace:   "restic",
+					Namespace:   "stash",
 					Subsystem:   "backup",
 					Name:        "data_processing_time_seconds",
 					Help:        "Total time taken to backup the target data",
@@ -98,36 +109,36 @@ func NewMetrics(labels prometheus.Labels) *Metrics {
 			FileMetrics: &FileMetrics{
 				TotalFiles: prometheus.NewGauge(
 					prometheus.GaugeOpts{
-						Namespace:   "restic",
+						Namespace:   "stash",
 						Subsystem:   "backup",
-						Name:        "total_files",
+						Name:        "files_total",
 						Help:        "Total number of files that has been backed up",
 						ConstLabels: labels,
 					},
 				),
 				NewFiles: prometheus.NewGauge(
 					prometheus.GaugeOpts{
-						Namespace:   "restic",
+						Namespace:   "stash",
 						Subsystem:   "backup",
-						Name:        "new_files",
+						Name:        "files_new",
 						Help:        "Total number of new files that has been created since last backup",
 						ConstLabels: labels,
 					},
 				),
 				ModifiedFiles: prometheus.NewGauge(
 					prometheus.GaugeOpts{
-						Namespace:   "restic",
+						Namespace:   "stash",
 						Subsystem:   "backup",
-						Name:        "modified_files",
+						Name:        "files_modified",
 						Help:        "Total number of files that has been modified since last backup",
 						ConstLabels: labels,
 					},
 				),
 				UnmodifiedFiles: prometheus.NewGauge(
 					prometheus.GaugeOpts{
-						Namespace:   "restic",
+						Namespace:   "stash",
 						Subsystem:   "backup",
-						Name:        "unmodified_files",
+						Name:        "files_unmodified",
 						Help:        "Total number of files that has not been changed since last backup",
 						ConstLabels: labels,
 					},
@@ -137,7 +148,7 @@ func NewMetrics(labels prometheus.Labels) *Metrics {
 		RepositoryMetrics: &RepositoryMetrics{
 			RepoIntegrity: prometheus.NewGauge(
 				prometheus.GaugeOpts{
-					Namespace:   "restic",
+					Namespace:   "stash",
 					Subsystem:   "repository",
 					Name:        "integrity",
 					Help:        "Result of repository integrity check after last backup",
@@ -146,7 +157,7 @@ func NewMetrics(labels prometheus.Labels) *Metrics {
 			),
 			RepoSize: prometheus.NewGauge(
 				prometheus.GaugeOpts{
-					Namespace:   "restic",
+					Namespace:   "stash",
 					Subsystem:   "repository",
 					Name:        "size_bytes",
 					Help:        "Indicates size of repository after last backup (in bytes)",
@@ -155,7 +166,7 @@ func NewMetrics(labels prometheus.Labels) *Metrics {
 			),
 			SnapshotCount: prometheus.NewGauge(
 				prometheus.GaugeOpts{
-					Namespace:   "restic",
+					Namespace:   "stash",
 					Subsystem:   "repository",
 					Name:        "snapshot_count",
 					Help:        "Indicates number of snapshots stored in the repository",
@@ -164,9 +175,9 @@ func NewMetrics(labels prometheus.Labels) *Metrics {
 			),
 			SnapshotRemovedOnLastCleanup: prometheus.NewGauge(
 				prometheus.GaugeOpts{
-					Namespace:   "restic",
+					Namespace:   "stash",
 					Subsystem:   "repository",
-					Name:        "snapshot_removed_on_last_cleanup",
+					Name:        "snapshot_cleaned",
 					Help:        "Indicates number of old snapshots cleaned up according to retention policy on last backup session",
 					ConstLabels: labels,
 				},
@@ -175,87 +186,157 @@ func NewMetrics(labels prometheus.Labels) *Metrics {
 	}
 }
 
-func (metrics *Metrics) SetValues(backupOutput *BackupOutput) error {
-	// set backup metrics values
-	dataSizeBytes, err := convertSizeToBytes(backupOutput.BackupStats.Size)
-	if err != nil {
-		return err
-	}
-	metrics.BackupMetrics.DataSize.Set(dataSizeBytes)
+func newRestoreMetrics(labels prometheus.Labels) *RestoreMetrics {
 
-	uploadSizeBytes, err := convertSizeToBytes(backupOutput.BackupStats.Uploaded)
-	if err != nil {
-		return err
+	return &RestoreMetrics{
+		RestoreSuccess: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Namespace:   "stash",
+				Subsystem:   "restore",
+				Name:        "session_success",
+				Help:        "Indicates weather the current restore session succeeded or not",
+				ConstLabels: labels,
+			},
+		),
+		RestoreDuration: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Namespace:   "stash",
+				Subsystem:   "restore",
+				Name:        "duration_seconds",
+				Help:        "Total time taken to complete the restore session",
+				ConstLabels: labels,
+			},
+		),
 	}
-	metrics.BackupMetrics.DataUploaded.Set(uploadSizeBytes)
-
-	processingTimeSeconds, err := convertTimeToSeconds(backupOutput.BackupStats.ProcessingTime)
-	if err != nil {
-		return err
-	}
-	metrics.BackupMetrics.DataProcessingTime.Set(float64(processingTimeSeconds))
-
-	metrics.BackupMetrics.FileMetrics.TotalFiles.Set(float64(*backupOutput.BackupStats.FileStats.TotalFiles))
-	metrics.BackupMetrics.FileMetrics.NewFiles.Set(float64(*backupOutput.BackupStats.FileStats.NewFiles))
-	metrics.BackupMetrics.FileMetrics.ModifiedFiles.Set(float64(*backupOutput.BackupStats.FileStats.ModifiedFiles))
-	metrics.BackupMetrics.FileMetrics.UnmodifiedFiles.Set(float64(*backupOutput.BackupStats.FileStats.UnmodifiedFiles))
-
-	// set repository metrics values
-	if *backupOutput.RepositoryStats.Integrity {
-		metrics.RepositoryMetrics.RepoIntegrity.Set(1)
-	} else {
-		metrics.RepositoryMetrics.RepoIntegrity.Set(0)
-	}
-	repoSize, err := convertSizeToBytes(backupOutput.RepositoryStats.Size)
-	if err != nil {
-		return err
-	}
-	metrics.RepositoryMetrics.RepoSize.Set(repoSize)
-	metrics.RepositoryMetrics.SnapshotCount.Set(float64(backupOutput.RepositoryStats.SnapshotCount))
-	metrics.RepositoryMetrics.SnapshotRemovedOnLastCleanup.Set(float64(backupOutput.RepositoryStats.SnapshotRemovedOnLastCleanup))
-	return nil
 }
 
-func (metricOpt *MetricsOptions) HandleMetrics(backupOutput *BackupOutput, backupErr error, jobName string) error {
-	labels := prometheus.Labels{}
-	for _, v := range metricOpt.Labels {
-		parts := strings.Split(v, "=")
-		if len(parts) == 2 {
-			labels[parts[0]] = parts[1]
-		}
+func (backupOutput *BackupOutput) HandleMetrics(metricOpt *MetricsOptions, backupErr error, jobName string) error {
+	if backupOutput == nil {
+		return fmt.Errorf("invalid backup output")
 	}
-	metrics := NewMetrics(labels)
+
+	labels := metricLabels(metricOpt.Labels)
+	metrics := newBackupMetrics(labels)
 
 	if backupErr == nil {
 		// set metrics values from backupOutput
-		err := metrics.SetValues(backupOutput)
+		err := metrics.setValues(backupOutput)
 		if err != nil {
 			return err
 		}
-		metrics.BackupMetrics.BackupSuccess.Set(1)
+		metrics.BackupSessionMetrics.BackupSuccess.Set(1)
 	} else {
-		metrics.BackupMetrics.BackupSuccess.Set(0)
+		metrics.BackupSessionMetrics.BackupSuccess.Set(0)
 	}
 
-	// crate metric registry
+	// create metric registry
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(
-		// register backup metrics
-		metrics.BackupMetrics.FileMetrics.TotalFiles,
-		metrics.BackupMetrics.FileMetrics.NewFiles,
-		metrics.BackupMetrics.FileMetrics.ModifiedFiles,
-		metrics.BackupMetrics.FileMetrics.UnmodifiedFiles,
-		metrics.BackupMetrics.DataSize,
-		metrics.BackupMetrics.DataUploaded,
-		metrics.BackupMetrics.DataProcessingTime,
-		metrics.BackupMetrics.BackupSuccess,
+		// register backup session metrics
+		metrics.BackupSessionMetrics.FileMetrics.TotalFiles,
+		metrics.BackupSessionMetrics.FileMetrics.NewFiles,
+		metrics.BackupSessionMetrics.FileMetrics.ModifiedFiles,
+		metrics.BackupSessionMetrics.FileMetrics.UnmodifiedFiles,
+		metrics.BackupSessionMetrics.DataSize,
+		metrics.BackupSessionMetrics.DataUploaded,
+		metrics.BackupSessionMetrics.DataProcessingTime,
+		metrics.BackupSessionMetrics.BackupSuccess,
 		// register repository metrics
 		metrics.RepositoryMetrics.RepoIntegrity,
 		metrics.RepositoryMetrics.RepoSize,
 		metrics.RepositoryMetrics.SnapshotCount,
 		metrics.RepositoryMetrics.SnapshotRemovedOnLastCleanup,
 	)
+	return metricOpt.sendMetrics(registry, jobName)
+}
 
+func (restoreOutput *RestoreOutput) HandleMetrics(metricOpt *MetricsOptions, restoreErr error, jobName string) error {
+	if restoreOutput == nil {
+		return fmt.Errorf("invalid restore output")
+	}
+	labels := metricLabels(metricOpt.Labels)
+	metrics := newRestoreMetrics(labels)
+
+	if restoreErr == nil {
+		metrics.RestoreDuration.Set(float64(restoreOutput.RestoreDuration))
+		metrics.RestoreSuccess.Set(1)
+	} else {
+		metrics.RestoreSuccess.Set(0)
+	}
+
+	// create metric registry
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(
+		metrics.RestoreDuration,
+		metrics.RestoreSuccess,
+	)
+	return metricOpt.sendMetrics(registry, jobName)
+}
+
+func (backupMetrics *BackupMetrics) setValues(backupOutput *BackupOutput) error {
+	if backupOutput == nil {
+		return nil
+	}
+	var (
+		totalDataSize        float64
+		totalUploadSize      float64
+		totalProcessingTime  int
+		totalFiles           int
+		totalNewFiles        int
+		totalModifiedFiles   int
+		totalUnmodifiedFiles int
+	)
+
+	for _, v := range backupOutput.BackupStats {
+		dataSizeBytes, err := convertSizeToBytes(v.Size)
+		if err != nil {
+			return err
+		}
+		totalDataSize = totalDataSize + dataSizeBytes
+
+		uploadSizeBytes, err := convertSizeToBytes(v.Uploaded)
+		if err != nil {
+			return err
+		}
+		totalUploadSize = totalUploadSize + uploadSizeBytes
+
+		processingTimeSeconds, err := convertTimeToSeconds(v.ProcessingTime)
+		if err != nil {
+			return err
+		}
+		totalProcessingTime = totalProcessingTime + processingTimeSeconds
+
+		totalFiles = totalFiles + *v.FileStats.TotalFiles
+		totalNewFiles = totalNewFiles + *v.FileStats.NewFiles
+		totalModifiedFiles = totalModifiedFiles + *v.FileStats.ModifiedFiles
+		totalUnmodifiedFiles = totalUnmodifiedFiles + *v.FileStats.UnmodifiedFiles
+	}
+
+	backupMetrics.BackupSessionMetrics.DataSize.Set(totalDataSize)
+	backupMetrics.BackupSessionMetrics.DataUploaded.Set(totalUploadSize)
+	backupMetrics.BackupSessionMetrics.DataProcessingTime.Set(float64(totalProcessingTime))
+	backupMetrics.BackupSessionMetrics.FileMetrics.TotalFiles.Set(float64(totalFiles))
+	backupMetrics.BackupSessionMetrics.FileMetrics.NewFiles.Set(float64(totalNewFiles))
+	backupMetrics.BackupSessionMetrics.FileMetrics.ModifiedFiles.Set(float64(totalModifiedFiles))
+	backupMetrics.BackupSessionMetrics.FileMetrics.UnmodifiedFiles.Set(float64(totalUnmodifiedFiles))
+
+	// set repository metrics values
+	if *backupOutput.RepositoryStats.Integrity {
+		backupMetrics.RepositoryMetrics.RepoIntegrity.Set(1)
+	} else {
+		backupMetrics.RepositoryMetrics.RepoIntegrity.Set(0)
+	}
+	repoSize, err := convertSizeToBytes(backupOutput.RepositoryStats.Size)
+	if err != nil {
+		return err
+	}
+	backupMetrics.RepositoryMetrics.RepoSize.Set(repoSize)
+	backupMetrics.RepositoryMetrics.SnapshotCount.Set(float64(backupOutput.RepositoryStats.SnapshotCount))
+	backupMetrics.RepositoryMetrics.SnapshotRemovedOnLastCleanup.Set(float64(backupOutput.RepositoryStats.SnapshotRemovedOnLastCleanup))
+	return nil
+}
+
+func (metricOpt *MetricsOptions) sendMetrics(registry *prometheus.Registry, jobName string) error {
 	// if Pushgateway URL is provided, then push the metrics to Pushgateway
 	if metricOpt.PushgatewayURL != "" {
 		pusher := push.New(metricOpt.PushgatewayURL, jobName)
@@ -273,4 +354,15 @@ func (metricOpt *MetricsOptions) HandleMetrics(backupOutput *BackupOutput, backu
 		}
 	}
 	return nil
+}
+
+func metricLabels(labels []string) prometheus.Labels {
+	promLabels := prometheus.Labels{}
+	for _, v := range labels {
+		parts := strings.Split(v, "=")
+		if len(parts) == 2 {
+			promLabels[parts[0]] = parts[1]
+		}
+	}
+	return promLabels
 }
